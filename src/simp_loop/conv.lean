@@ -68,7 +68,7 @@ protected meta def bind {α β : Type} (c₁ : conv α) (c₂ : α → conv β) 
   has_bind.bind (c₁ r e) (λ⟨a, e₁, pr₁⟩,
   has_bind.bind (c₂ a r e₁) (λ⟨b, e₂, pr₂⟩,
   has_bind.bind (join_proofs r pr₁ pr₂) (λpr, return ⟨b, e₂, pr⟩)))
-/- do -- wrong bind instance something with `name`?
+/- do -- fails as it chooses the `conv.bind` as `bind`...
   ⟨a, e₁, pr₁⟩ ← c₁ r e,
   ⟨b, e₂, pr₂⟩ ← c₂ a r e₁,
   pr           ← join_proofs r pr₁ pr₂,
@@ -91,8 +91,8 @@ meta def whnf (md : transparency := reducible) : conv unit :=
 meta def dsimp : conv unit :=
 λ r e, do s ← simp_lemmas.mk_default, n ← s.dsimplify [] e, return ⟨(), n, none⟩
 
-meta def try (c : conv unit) : conv unit :=
-c <|> return ()
+meta def try {α} (c : conv α) : conv (option α) :=
+(c >>= (return ∘ some)) <|> return none
 
 meta def tryb (c : conv unit) : conv bool :=
 (c >> return tt) <|> return ff
@@ -163,8 +163,8 @@ meta def first {α : Type} : list (conv α) → conv α
 | []      := conv.failed
 | (c::cs) := c <|> first cs
 
-meta def match_pattern (p : pattern) : conv unit :=
-λ r e, tactic.match_pattern p e >> return ⟨(), e, none⟩
+meta def match_pattern (p : pattern) : conv (list level × list expr) :=
+do l ← lhs, lift_tactic $ tactic.match_pattern p l
 
 meta def mk_match_expr (p : pexpr) : tactic (conv unit) :=
 do new_p ← pexpr_to_pattern p,
@@ -175,48 +175,48 @@ meta def match_expr (p : pexpr) : conv unit :=
   new_p ← pexpr_to_pattern p,
   tactic.match_pattern new_p e >> return ⟨(), e, none⟩
 
-meta def funext (c : conv unit) : conv unit :=
+meta def funext {α} (c : expr → conv α) : conv α :=
 λ r lhs, do
   guard (r = `eq),
   (expr.lam n bi d b) ← return lhs,
   let aux_type := expr.pi n bi d (expr.const `true []),
   (result, _) ← solve_aux aux_type $ do {
     x ← intro1,
-    c_result ← c r (b.instantiate_var x),
+    c_result ← c x r (b.instantiate_var x),
     let rhs  := expr.lam n bi d (c_result.rhs.abstract x),
-    match c_result.proof : _ → tactic (conv_result unit) with
+    match c_result.proof : _ → tactic (conv_result α) with
     | some pr := do
       let aux_pr := expr.lam n bi d (pr.abstract x),
       new_pr ← mk_app `funext [lhs, rhs, aux_pr],
-      return ⟨(), rhs, some new_pr⟩
-    | none    := return ⟨(), rhs, none⟩
+      return ⟨c_result.val, rhs, some new_pr⟩
+    | none    := return ⟨c_result.val, rhs, none⟩
     end },
   return result
 
-meta def congr_core (c_f c_a : conv unit) : conv unit :=
+meta def congr_core {α β} (c_f : conv α) (c_a : conv β) : conv (option α × option β) :=
 λ r lhs, do
   guard (r = `eq),
   (expr.app f a) ← return lhs,
   f_type ← infer_type f >>= tactic.whnf,
   guard (f_type.is_arrow),
-  ⟨(), new_f, of⟩ ← try c_f r f,
-  ⟨(), new_a, oa⟩ ← try c_a r a,
+  ⟨val_f, new_f, of⟩ ← try c_f r f,
+  ⟨val_a, new_a, oa⟩ ← try c_a r a,
   rhs ← return $ new_f new_a,
   match of, oa with
   | none, none      :=
-      return ⟨(), rhs, none⟩
+      return ⟨(val_f, val_a), rhs, none⟩
   | none, some pr_a := do
       pr ← mk_app `congr_arg [a, new_a, f, pr_a],
-      return ⟨(), new_f new_a, some pr⟩
+      return ⟨(val_f, val_a), new_f new_a, some pr⟩
   | some pr_f, none := do
       pr ← mk_app `congr_fun [f, new_f, pr_f, a],
-      return ⟨(), rhs, some pr⟩
+      return ⟨(val_f, val_a), rhs, some pr⟩
   | some pr_f, some pr_a := do
       pr ← mk_app `congr [f, new_f, a, new_a, pr_f, pr_a],
-      return ⟨(), rhs, some pr⟩
+      return ⟨(val_f, val_a), rhs, some pr⟩
   end
 
-meta def congr (c : conv unit) : conv unit :=
+meta def congr {α} (c : conv α) : conv (option α × option α) :=
 congr_core c c
 
 meta def bottom_up (c : conv unit) : conv unit :=
