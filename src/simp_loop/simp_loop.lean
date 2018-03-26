@@ -16,14 +16,15 @@ open tactic
   - add monotonicity: mono p → (∃x, x ≤ t ∧ p x) ↔ p t
   - use Galois connection for focusing: f x ≤ t ↔ t ≤ g x
 
-* cancellation:
-  - in an expression: + x - y - x = - y
-  - in an (in)equality: a + b = b + c → a = c
-
 * if / match distributivity: C (if p then a else b) = if p then C a else C b
   - how to handle the dependent case?
   - the context C should not contain binder appearing in p, a, and b.
   - take care of iterated ifs: if p then (if q then a else b) else c
+
+The following may be interesting until there is a algebraic normalizer in Lean
+* cancellation:
+  - in an expression: + x - y - x = - y
+  - in an (in)equality: a + b = b + c → a = c
 
 * basic linear arithmetic?
 
