@@ -254,44 +254,50 @@ meta def congr_core {α β} (c_f : conv_t m α) (c_a : conv_t m β) : conv_t m (
 meta def congr (c : conv_t m unit) : conv_t m unit :=
 congr_core c c >> skip
 
+end
+
+end conv_t
+
+namespace conv
+
 meta def bottom_up (c : conv unit) : conv unit :=
-λ r e, do
+⟨λ r e, do
   s ← simp_lemmas.mk_default,
   (a, new_e, pr) ←
      ext_simplify_core () {} s
        (λ u, return u)
        (λ a s r p e, failed)
-       (λ a s r p e, do ⟨u, new_e, pr⟩ ← c r e, return ((), new_e, pr, tt))
+       (λ a s r p e, do ⟨u, new_e, pr⟩ ← c.run r e, return ((), new_e, pr, tt))
        r e,
-  return ⟨(), new_e, some pr⟩
+  return ⟨(), new_e, some pr⟩⟩
 
 meta def top_down (c : conv unit) : conv unit :=
-λ r e, do
+⟨λ r e, do
   s ← simp_lemmas.mk_default,
   (a, new_e, pr) ←
      ext_simplify_core () {} s
        (λ u, return u)
-       (λ a s r p e, do ⟨u, new_e, pr⟩ ← c r e, return ((), new_e, pr, tt))
+       (λ a s r p e, do ⟨u, new_e, pr⟩ ← c.run r e, return ((), new_e, pr, tt))
        (λ a s r p e, failed)
        r e,
-  return ⟨(), new_e, some pr⟩
+  return ⟨(), new_e, some pr⟩⟩
 
 meta def find (c : conv unit) : conv unit :=
-λ r e, do
+⟨λ r e, do
   s ← simp_lemmas.mk_default,
   (a, new_e, pr) ←
      ext_simplify_core () {} s
        (λ u, return u)
        (λ a s r p e,
-         (do ⟨u, new_e, pr⟩ ← c r e, return ((), new_e, pr, ff))
+         (do ⟨u, new_e, pr⟩ ← c.run r e, return ((), new_e, pr, ff))
          <|>
          return ((), e, none, tt))
        (λ a s r p e, failed)
        r e,
-  return ⟨(), new_e, some pr⟩
+  return ⟨(), new_e, some pr⟩⟩
 
 meta def find_pattern (pat : pattern) (c : conv unit) : conv unit :=
-λ r e, do
+⟨λ r e, do
   s ← simp_lemmas.mk_default,
   (a, new_e, pr) ←
      ext_simplify_core () {} s
@@ -299,20 +305,16 @@ meta def find_pattern (pat : pattern) (c : conv unit) : conv unit :=
        (λ a s r p e, do
          matched ← (tactic.match_pattern pat e >> return tt) <|> return ff,
          if matched
-         then do ⟨u, new_e, pr⟩ ← c r e, return ((), new_e, pr, ff)
+         then do ⟨u, new_e, pr⟩ ← c.run r e, return ((), new_e, pr, ff)
          else return ((), e, none, tt))
        (λ a s r p e, failed)
        r e,
-  return ⟨(), new_e, some pr⟩
+  return ⟨(), new_e, some pr⟩⟩
 
 meta def findp : pexpr → conv unit → conv unit :=
-λ p c r e, do
+λ p c, ⟨λ r e, do
   pat ← pexpr_to_pattern p,
-  find_pattern pat c r e
-
-end
-
-end conv_t
+  (find_pattern pat c).run r e⟩
 
 meta def conversion (c : conv unit) : tactic unit :=
 do (r, lhs, rhs) ← (target_lhs_rhs <|> fail "conversion failed, target is not of the form 'lhs R rhs'"),
@@ -324,5 +326,7 @@ do (r, lhs, rhs) ← (target_lhs_rhs <|> fail "conversion failed, target is not 
                      rhs_fmt.indent 4 ++ format.line ++ "provided" ++
                      new_lhs_fmt.indent 4)),
    exact pr
+
+end conv
 
 end simp_loop
