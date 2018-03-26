@@ -5,6 +5,22 @@ Authors: Leonardo de Moura
 
 Converter monad for building simplifiers.
 -/
+
+namespace tactic
+
+meta class monad_tactic (m : Type → Type) :=
+(lift_tactic {} {α : Type} : tactic α → m α)
+
+export monad_tactic (lift_tactic)
+
+meta instance : monad_tactic tactic := ⟨λα, id⟩
+
+meta instance monad_tactic_trans {m : Type → Type} {n : Type → Type}
+  [has_monad_lift m n] [monad_tactic m] : monad_tactic n :=
+⟨λα t, monad_lift (lift_tactic t : m α)⟩
+
+end tactic
+
 open tactic
 
 namespace simp_loop
@@ -12,23 +28,35 @@ namespace simp_loop
 meta structure conv_result (α : Type) :=
 (val : α) (rhs : expr) (proof : option expr)
 
-meta def conv (α : Type) : Type :=
-name → expr → tactic (conv_result α)
+meta structure conv_t (m : Type → Type) (α : Type) : Type :=
+(run : name → expr → m (conv_result α))
 
-namespace conv
+attribute [pp_using_anonymous_constructor] conv_t
 
-meta def lhs : conv expr :=
-λ r e, return ⟨e, e, none⟩
+@[reducible] meta def conv (α : Type) : Type := conv_t tactic α
 
-meta def change (new_p : pexpr) : conv unit :=
-λ r e, do
-  e_type ← infer_type e,
-  new_e ← to_expr ``(%%new_p : %%e_type),
-  unify e new_e,
-  return ⟨(), new_e, none⟩
+namespace conv_t
 
-protected meta def pure {α : Type} : α → conv α :=
-λ a r e, return ⟨a, e, none⟩
+section
+parameters {m : Type → Type} [monad m] [monad_tactic m]
+
+meta def lhs : conv_t m expr :=
+⟨λ r e, return ⟨e, e, none⟩⟩
+
+meta def rel : conv_t m name :=
+⟨λ r e, return ⟨r, e, none⟩⟩
+
+meta def change (new_p : pexpr) : conv_t m unit :=
+⟨λ r e, do
+  new_e ← lift_tactic (do
+    e_type ← infer_type e,
+    new_e ← to_expr ``(%%new_p : %%e_type),
+    unify e new_e,
+    return new_e),
+  return ⟨(), new_e, none⟩⟩
+
+protected meta def pure {α : Type} : α → conv_t m α :=
+λ a, ⟨λr e, return ⟨a, e, none⟩⟩
 
 private meta def join_proofs (r : name) (o₁ o₂ : option expr) : tactic (option expr) :=
 match o₁, o₂ with
@@ -42,51 +70,55 @@ match o₁, o₂ with
   end
 end
 
-protected meta def seq {α β : Type} (c₁ : conv (α → β)) (c₂ : conv α) : conv β :=
-λ r e, do
-  ⟨fn, e₁, pr₁⟩ ← c₁ r e,
-  ⟨a,  e₂, pr₂⟩ ← c₂ r e₁,
-  pr            ← join_proofs r pr₁ pr₂,
-  return ⟨fn a, e₂, pr⟩
+protected meta def seq {α β : Type} (c₁ : conv_t m (α → β)) (c₂ : conv_t m α) : conv_t m β :=
+⟨λ r e, do
+  ⟨fn, e₁, pr₁⟩ ← c₁.run r e,
+  ⟨a,  e₂, pr₂⟩ ← c₂.run r e₁,
+  pr            ← lift_tactic $ join_proofs r pr₁ pr₂,
+  return ⟨fn a, e₂, pr⟩⟩
 
-protected meta def fail {α β : Type} [has_to_format β] (msg : β) : conv α :=
-λ r e, tactic.fail msg
+protected meta def map {α β : Type} (f : α → β) (c : conv_t m α) : conv_t m β :=
+⟨λ r e, do
+  ⟨a, e₁, pr⟩ ← c.run r e,
+  return ⟨f a, e₁, pr⟩⟩
 
-protected meta def failed {α : Type} : conv α :=
-λ r e, tactic.failed
-
-protected meta def orelse {α : Type} (c₁ : conv α) (c₂ : conv α) : conv α :=
-λ r e, c₁ r e <|> c₂ r e
-
-protected meta def map {α β : Type} (f : α → β) (c : conv α) : conv β :=
-λ r e, do
-  ⟨a, e₁, pr⟩ ← c r e,
-  return ⟨f a, e₁, pr⟩
-
-protected meta def bind {α β : Type} (c₁ : conv α) (c₂ : α → conv β) : conv β :=
-λ r e,
-  has_bind.bind (c₁ r e) (λ⟨a, e₁, pr₁⟩,
-  has_bind.bind (c₂ a r e₁) (λ⟨b, e₂, pr₂⟩,
-  has_bind.bind (join_proofs r pr₁ pr₂) (λpr, return ⟨b, e₂, pr⟩)))
+protected meta def bind {α β : Type} (c₁ : conv_t m α) (c₂ : α → conv_t m β) : conv_t m β :=
+⟨λ r e,
+  has_bind.bind (c₁.run r e) (λ⟨a, e₁, pr₁⟩,
+  has_bind.bind ((c₂ a).run r e₁) (λ⟨b, e₂, pr₂⟩,
+  has_bind.bind (lift_tactic $ join_proofs r pr₁ pr₂) (λpr, return ⟨b, e₂, pr⟩)))⟩
 /- do -- fails as it chooses the `conv.bind` as `bind`...
-  ⟨a, e₁, pr₁⟩ ← c₁ r e,
-  ⟨b, e₂, pr₂⟩ ← c₂ a r e₁,
-  pr           ← join_proofs r pr₁ pr₂,
+  ⟨a, e₁, pr₁⟩ ← c₁.run r e,
+  ⟨b, e₂, pr₂⟩ ← (c₂ a).run r e₁,
+  pr           ← lift_tactic $ join_proofs r pr₁ pr₂,
   return ⟨b, e₂, pr⟩
   -/
 
-meta instance : monad conv :=
-{ map  := @conv.map,
-  pure := @conv.pure,
-  bind := @conv.bind }
+meta instance : monad_tactic (conv_t m) :=
+⟨λα t, ⟨λ r e, do a ← (lift_tactic t : m α), return ⟨a, e, none⟩⟩⟩
+
+meta instance : monad (conv_t m) :=
+{ map  := @conv_t.map m _ _,
+  pure := @conv_t.pure m _ _,
+  bind := @conv_t.bind m _ _ }
+
+/-
+protected meta def fail {α β : Type} [has_to_format β] (msg : β) : conv α :=
+⟨λ r e, tactic.fail msg⟩
+
+protected meta def failed {α : Type} : conv α :=
+⟨λ r e, tactic.failed⟩
+protected meta def orelse {α : Type} (c₁ : conv α) (c₂ : conv α) : conv α :=
+λ r e, c₁ r e <|> c₂ r e
 
 meta instance : alternative conv :=
 { failure := @conv.failed,
   orelse  := @conv.orelse,
   ..conv.monad }
+-/
 
-meta def whnf (md : transparency := reducible) : conv unit :=
-λ r e, do n ← tactic.whnf e md, return ⟨(), n, none⟩
+meta def whnf (md : transparency := reducible) : conv_t m unit :=
+⟨λ r e, do n ← (lift_tactic (tactic.whnf e md) : m expr), return ⟨(), n, none⟩⟩
 
 meta def dsimp : conv unit :=
 λ r e, do s ← simp_lemmas.mk_default, n ← s.dsimplify [] e, return ⟨(), n, none⟩
