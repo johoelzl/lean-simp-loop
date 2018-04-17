@@ -1,7 +1,7 @@
 /-
 Copyright (c) 2016 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
-Authors: Leonardo de Moura
+Authors: Leonardo de Moura, Johannes Hölzl
 
 Converter monad for building simplifiers.
 -/
@@ -13,11 +13,37 @@ meta class monad_tactic (m : Type → Type) :=
 
 export monad_tactic (lift_tactic)
 
-meta instance : monad_tactic tactic := ⟨λα, id⟩
+@[inline] meta instance : monad_tactic tactic := ⟨λα, id⟩
 
 meta instance monad_tactic_trans {m : Type → Type} {n : Type → Type}
   [has_monad_lift m n] [monad_tactic m] : monad_tactic n :=
 ⟨λα t, monad_lift (lift_tactic t : m α)⟩
+
+
+/- The following functions are generalizations from tactic.lean -/
+
+meta def msolve_aux {α m} [monad_tactic m] [monad m] (type : expr) (tac : m α) : m (α × expr) :=
+do m ← lift_tactic $ mk_meta_var type,
+   gs ← lift_tactic $ get_goals,
+   lift_tactic $ set_goals [m],
+   a ← tac,
+   lift_tactic $ set_goals gs,
+   return (a, m)
+
+private meta def mfocus_aux {m} [monad_tactic m] [monad m] : list (m unit) → list expr → list expr → m unit
+| []       []      rs := lift_tactic $ set_goals rs
+| (t::ts)  []      rs := lift_tactic $ fail "focus tactic failed, insufficient number of goals"
+| tts      (g::gs) rs :=
+  mcond (lift_tactic $ is_assigned g) (mfocus_aux tts gs rs) $
+    do lift_tactic $ set_goals [g],
+       t::ts ← pure tts | lift_tactic $ fail "focus tactic failed, insufficient number of tactics",
+       t,
+       rs' ← lift_tactic $ get_goals,
+       mfocus_aux ts gs (rs ++ rs')
+
+/-- `mfocus [t_1, ..., t_n]` applies t_i to the i-th goal. Fails if the number of goals is not n. -/
+meta def mfocus {m} [monad_tactic m] [monad m] (ts : list (m unit)) : m unit :=
+do gs ← lift_tactic $ get_goals, mfocus_aux ts gs []
 
 end tactic
 
@@ -28,8 +54,8 @@ namespace simp_loop
 meta structure conv_result (α : Type) :=
 (val : α) (rhs : expr) (proof : option expr)
 
-meta def conv_result.mmap_pr {α} (f_r : expr → tactic expr) (f_pr : expr → expr → tactic expr) :
-  conv_result α → tactic (conv_result α)
+meta def conv_result.mmap_pr {α} {m} [monad m]
+  (f_r : expr → m expr) (f_pr : expr → expr → m expr) : conv_result α → m (conv_result α)
 | ⟨a, r, pr⟩ := do
   r' ← f_r r,
   match pr with
@@ -47,15 +73,20 @@ attribute [pp_using_anonymous_constructor] conv_t
 @[reducible] meta def conv (α : Type) : Type := conv_t tactic α
 
 namespace conv_t
+meta instance {m : Type → Type} [monad m] [monad_tactic m] : monad_tactic (conv_t m) :=
+⟨λα t, ⟨λ r e, do a ← lift_tactic t, return ⟨a, e, none⟩⟩⟩
+
+meta instance {m : Type → Type} [monad m] [monad_tactic m] {α} : has_coe (tactic α) (conv_t m α) :=
+⟨lift_tactic⟩
+
+meta instance {m m'} [monad m] [monad m'] : monad_functor m m' (conv_t m) (conv_t m') :=
+⟨λα f c, ⟨λrel lhs, f $ c.run rel lhs⟩⟩
+
+meta instance (m) [functor m] : has_monad_lift m (conv_t m) :=
+⟨λα v, ⟨λrel rhs, (λa, ⟨a, rhs, none⟩) <$> v⟩⟩
 
 section
 parameters {m : Type → Type} [monad m] [alternative m] [monad_tactic m]
-
-meta instance : monad_tactic (conv_t m) :=
-⟨λα t, ⟨λ r e, do a ← lift_tactic t, return ⟨a, e, none⟩⟩⟩
-
-meta instance {α} : has_coe (tactic α) (conv_t m α) :=
-⟨lift_tactic⟩
 
 protected meta def pure {α : Type} : α → conv_t m α :=
 λ a, ⟨λr e, return ⟨a, e, none⟩⟩
@@ -150,6 +181,14 @@ tactic.trace a
 meta def trace_lhs : conv_t m unit :=
 lhs >>= trace
 
+meta def propext {α} (c : conv_t m α) : conv_t m α := do
+  r ← rel,
+  if r = `iff then c else
+  ⟨λr lhs, do
+    guard (r = `eq),
+    r ← c.run `iff lhs,
+    lift_tactic $ r.mmap_pr return $ λrhs pr, mk_app `propext [pr]⟩
+
 meta def apply_lemmas_core (s : simp_lemmas) (prove : tactic unit) : conv_t m unit :=
 ⟨λ r e, do
   (new_e, pr) ← lift_tactic $ s.rewrite e prove r,
@@ -158,12 +197,6 @@ meta def apply_lemmas_core (s : simp_lemmas) (prove : tactic unit) : conv_t m un
 meta def apply_lemmas (s : simp_lemmas) : conv_t m unit :=
 apply_lemmas_core s tactic.failed
 
-meta def propext {α} (c : conv_t m α) : conv_t m α :=
-⟨λr lhs, do
-  guard (r = `eq),
-  r ← c.run `iff lhs,
-  lift_tactic $ r.mmap_pr return $ λrhs pr, mk_app `propext [pr]⟩
-
 /- adapter for using iff-lemmas as eq-lemmas -/
 meta def apply_propext_lemmas_core (s : simp_lemmas) (prove : tactic unit) : conv_t m unit :=
 propext (apply_lemmas_core s prove)
@@ -171,20 +204,56 @@ propext (apply_lemmas_core s prove)
 meta def apply_propext_lemmas (s : simp_lemmas) : conv_t m unit :=
 apply_propext_lemmas_core s tactic.failed
 
-private meta def mk_refl_proof (r : name) (e : expr) : tactic expr :=
-do env ← get_env,
-   match (environment.refl_for env r) with
-   | (some refl) := do pr ← mk_app refl [e], return pr
-   | none        := tactic.fail format!"converter failed, relation '{r}' is not reflexive"
-   end
+private meta def mk_refl_proof (r : name) (e : expr) : tactic expr := do
+env ← get_env,
+match (environment.refl_for env r) with
+| (some refl) := do pr ← mk_app refl [e], return pr
+| none        := tactic.fail format!"converter failed, relation '{r}' is not reflexive"
+end
 
-meta def to_tactic (c : conv unit) : name → expr → tactic (expr × expr) :=
-λ r e, do
-  ⟨u, e₁, o⟩ ← c.run r e,
-  match o with
-  | none   := do p ← mk_refl_proof r e, return (e₁, p)
-  | some p := return (e₁, p)
-  end
+meta def to_tactic {α} (c : conv_t m α) (rel : name) (lhs : expr) : m (α × expr × expr) := do
+⟨u, e₁, o⟩ ← c.run rel lhs,
+p ← match o with
+| none   := lift_tactic $ mk_refl_proof rel lhs
+| some p := return p
+end,
+return (u, e₁, p)
+
+meta def conversion {α} (c : conv_t m α) : m α := do
+(r, lhs, rhs) ←
+  lift_tactic $ (target_lhs_rhs <|> tactic.fail "conversion failed, target is not of the form 'lhs R rhs'"),
+(a, new_rhs, pr) ← to_tactic c r lhs,
+lift_tactic $ do
+  (unify new_rhs rhs <|> do
+      new_lhs_fmt ← pp new_rhs,
+      rhs_fmt      ← pp rhs,
+      tactic.fail (to_fmt "conversion failed, expected" ++
+                    rhs_fmt.indent 4 ++ format.line ++ "provided" ++
+                    new_lhs_fmt.indent 4)),
+  exact pr,
+  return a
+
+meta def solve {α} (c : m α) : conv_t m α :=
+⟨λrel lhs, do
+  meta_rhs ← lift_tactic (infer_type lhs >>= mk_meta_var),
+  g ← lift_tactic $ mk_app rel [lhs, meta_rhs],
+  (a, meta_pr) ← msolve_aux g c,
+  rhs ← lift_tactic $ instantiate_mvars meta_rhs,
+  pr ← lift_tactic $ instantiate_mvars meta_pr,
+  return ⟨a, rhs, some pr⟩⟩
+
+meta def congr_rule (e : expr) (c : list $ list expr → conv_t m unit) : conv_t m unit :=
+solve $ do
+  lift_tactic $ apply e,
+  mfocus (c.map $ λt:list expr → conv_t m unit, do vs ← lift_tactic $ intros, conversion (t vs)),
+  lift_tactic $ done
+
+meta def congr_binder (n : name) (c : expr → conv_t m unit) : conv_t m unit := do
+e ← mk_const n,
+congr_rule e [λl, do [v] ← return l | fail "binder expected", c v]
+
+meta def apply_const (n : name) : conv_t m unit :=
+solve $ lift_tactic $ applyc n
 
 meta def apply_simp_set (attr_name : name) : conv_t m unit :=
 get_user_simp_lemmas attr_name >>= apply_lemmas
@@ -216,6 +285,7 @@ meta def match_expr (p : pexpr) : conv_t m unit := do
   match_pattern new_p,
   skip
 
+-- old_conv uses solve_aux + intro1 to add a new hypothesis in the current state...
 meta def funext {α} (c : expr → conv_t m α) : conv_t m α :=
 ⟨λr lhs, do
   guard (r = `eq),
@@ -316,17 +386,10 @@ meta def findp : pexpr → conv unit → conv unit :=
   pat ← pexpr_to_pattern p,
   (find_pattern pat c).run r e⟩
 
-meta def conversion (c : conv unit) : tactic unit :=
-do (r, lhs, rhs) ← (target_lhs_rhs <|> fail "conversion failed, target is not of the form 'lhs R rhs'"),
-   (new_lhs, pr) ← conv_t.to_tactic c r lhs,
-   (unify new_lhs rhs <|>
-     do new_lhs_fmt ← pp new_lhs,
-        rhs_fmt     ← pp rhs,
-        fail (to_fmt "conversion failed, expected" ++
-                     rhs_fmt.indent 4 ++ format.line ++ "provided" ++
-                     new_lhs_fmt.indent 4)),
-   exact pr
-
 end conv
 
 end simp_loop
+
+
+
+

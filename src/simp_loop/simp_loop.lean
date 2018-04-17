@@ -30,3 +30,22 @@ The following may be interesting until there is a algebraic normalizer in Lean
 
 -/
 
+namespace simp_loop
+
+meta def proc_attr : user_attribute :=
+{ name := `simp_loop.proc,
+  descr := "Simplification procedures for the simp loop." }
+
+protected meta def loop (p : list $ tactic unit) (s : simp_lemmas) (to_unfold : list name)
+  (cfg : simp_config) (dcfg : dsimp_config) : tactic unit := do
+t₀ ← target,
+simp_target s to_unfold cfg,
+dsimp_target s to_unfold dcfg,
+p.mmap' id,
+t₁ ← target,
+if t₀ =ₐ t₁ then skip else loop
+
+meta def main : tactic unit := do
+_ -- prepare simp lemmas, to_unfold data, configuration, discharger
+
+end simp_loop
