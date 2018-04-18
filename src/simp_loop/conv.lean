@@ -246,11 +246,20 @@ meta def congr_rule (e : expr) (c : list $ list expr → conv_t m unit) : conv_t
 solve $ do
   lift_tactic $ apply e,
   mfocus (c.map $ λt:list expr → conv_t m unit, do vs ← lift_tactic $ intros, conversion (t vs)),
-  lift_tactic $ done
+  lift_tactic done
 
-meta def congr_binder (n : name) (c : expr → conv_t m unit) : conv_t m unit := do
+meta def congr_binder {α} (n : name) (c : expr → conv_t m α) : conv_t m α := do
 e ← mk_const n,
-congr_rule e [λl, do [v] ← return l | fail "binder expected", c v]
+solve $ do
+  lift_tactic $ apply e,
+  [v] ← lift_tactic $ intros | failure,
+  conversion (c v)
+
+meta def congr_simple {α} (n : name) (c : conv_t m α) : conv_t m α := do
+e ← mk_const n,
+solve $ do
+  lift_tactic $ apply e,
+  conversion c
 
 meta def apply_const (n : name) : conv_t m unit :=
 solve $ lift_tactic $ applyc n
