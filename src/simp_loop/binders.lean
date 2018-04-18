@@ -55,6 +55,22 @@ meta structure binder_eq_elim :=
 
 section
 parameter (b : binder_eq_elim)
+/-
+
+Expected normal form:
+
+  all conjuncts are inside existentials
+    `exists_and_distrib_left`, `exists_and_distrib_right`
+  no conjuncts or existentials inside the binder type of a existental:
+    `exists_and`, `exists_exists`
+
+  now we have two cases:
+    `∃x, ∃ ⋯ ∃ , … ∧ x = t ∧ …`
+  or
+    `∃x, ∃ ⋯ ∃ h : x = t, …`
+
+-/
+
 
 meta def push : list info → conv unit := λ_, skip
 /-
@@ -112,7 +128,19 @@ ps' ← ps.mmap (λd, do
   return $ d.1 :: ps),
 return ps'.join
 
-meta def reorder_equality : list info → conv unit | l := _
+meta def reorder_equality : list info → conv bool
+| [] := do
+  `(_ = _) ← lhs | return tt, -- inner term is binder
+  return ff -- inner term is equality
+| [info.binder _ _] := _
+| [info.operator _] := _
+| ((info.binder _ _)::xs) := _
+| ((info.operator _)::xs) := _
+
+meta def elim_equality (l : list info) : conv unit := do
+b.apply_congr (λe, reorder_equality l),
+_
+
 
 meta def reorder_non_dependent1 : list info → conv (list info)
 | [] := failed
@@ -127,7 +155,7 @@ meta def reorder_non_dependent1 : list info → conv (list info)
   return xs
 
 meta def reorder_non_dependent : list info → conv unit | l := do
-l' ← b.apply_congr (λe, reorder_non_dependent1 l) | reorder_equality l,
+l' ← b.apply_congr (λe, reorder_non_dependent1 l) | elim_equality l,
 b.apply_comm,
 b.apply_congr (λe, reorder_non_dependent l')
 
