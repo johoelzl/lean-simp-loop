@@ -21,15 +21,6 @@ Here ..x.. are binders, maybe also some constants which provide commutativity ru
 -/
 import simp_loop.conv
 
-section
-
-set_option pp.all true
-example {α β : Type} {f : β → α} {p : α → Prop} :
-  ∃a : α, ∃b : (λa:α, β) a, ∃h : a = f b, p a :=
-_
-
-end
-
 namespace simp_loop
 open conv_t tactic expr
 
@@ -57,6 +48,7 @@ rules:
   r_eq : E ∧ p            ~>  E ∧ p
   r_ex : (∃h:E, q h) ∧ p  ~>  ∃h:E, q h ∧ p
   r_cn : (E ∧ q) ∧ p      ~>  E ∧ (q ∧ p)
+  e_eq_Prop : ∃a, E       ~>  E ∧ a
   e_eq : ∃a, E            ~>  E ∧ nonempty a
   e_ex : ∃a, ∃h:E, q h a  ~>  ∃h:E, ∃a, q h a
   e_cn : ∃a, E ∧ p a      ~>  E ∧ (∃a, p a)
@@ -84,6 +76,8 @@ lemma r_ex : ((∃h:E, r h) ∧ p) ↔ (∃h:E, r h ∧ p) :=
 ⟨λ⟨⟨e, r⟩, h⟩, ⟨e, r, h⟩, λ⟨e, r, h⟩, ⟨⟨e, r⟩, h⟩⟩
 lemma r_cn : ((E ∧ q) ∧ p) ↔ (E ∧ (q ∧ p)) :=
 ⟨λ⟨⟨e, r⟩, h⟩, ⟨e, r, h⟩, λ⟨e, r, h⟩, ⟨⟨e, r⟩, h⟩⟩
+lemma e_eq_Prop : (∃a:p, E) ↔ (E ∧ p) :=
+⟨λ⟨a, h⟩, ⟨h, a⟩, λ⟨h, a⟩, ⟨a, h⟩⟩
 lemma e_eq : (∃a:α, E) ↔ (E ∧ nonempty α) :=
 ⟨λ⟨a, h⟩, ⟨h, ⟨a⟩⟩, λ⟨h, ⟨a⟩⟩, ⟨a, h⟩⟩
 lemma e_ex : (∃a:α, ∃h:E, s h a) ↔ (∃h:E, ∃a:α, s h a) :=
@@ -133,94 +127,137 @@ end
 meta inductive info
 | binder (v : expr) (dependent : bool) | operator (side : bool)
 
+namespace info
+open format
+meta instance : has_to_format info :=
+⟨λi, match i with
+| info.binder v d := to_fmt "binder " ++ to_fmt v ++ " " ++ to_fmt d
+| info.operator s := to_fmt "operator " ++ to_fmt s
+end⟩
+end info
+
 meta inductive norm_form
 | eq | ex | cn
+
+namespace norm_form
+open format
+meta instance : has_to_format norm_form :=
+⟨λi, match i with
+| norm_form.eq := to_fmt "eq"
+| norm_form.ex := to_fmt "ex"
+| norm_form.cn := to_fmt "cn"
+end⟩
+end norm_form
 
 meta def check_eq (x : expr) (deps : list expr) : expr → bool
 | `(%%l = %%r) := (l = x ∧ deps.all (λx, ¬ x.occurs r)) ∨ (r = x ∧ deps.all (λx, ¬ x.occurs l))
 | _ := ff
 
+meta def congr_ex {α} (c : conv α) : conv α := congr_binder ``ex_congr (λ_, c)
+
+meta def congr {α} (c : conv α) : info → conv α
+| (info.binder _ _) := congr_ex c
+| (info.operator tt) := congr_simple ``r_congr c
+| (info.operator ff) := congr_simple ``l_congr c
+
+meta def apply_norm (n_eq n_ex n_cn : list name) : norm_form → conv norm_form
+| norm_form.eq := do n_eq.mfirst apply_const, return norm_form.cn
+| norm_form.ex := do n_ex.mfirst apply_const, return norm_form.ex
+| norm_form.cn := do n_cn.mfirst apply_const, return norm_form.cn
+
 meta def analyse (v : expr) (deps : list expr) : expr → tactic (option $ list $ info × expr)
 | `(@Exists %%α %%p) := if check_eq v deps α then
     return none
   else do
-    (lam pp_n bi domain body) ← return p,
+    (lam pp_n bi domain body) ← return p | return (some []),
     x ← mk_local' pp_n bi domain,
-    return [(info.binder v (deps.any $ λv, v.occurs α), body.instantiate_var x)]
-| `(%%p ∧ %%q) := do
-  return [(info.operator tt, p), (info.operator tt, q)]
+    return [(info.binder x (deps.any $ λv, v.occurs α), body.instantiate_var x)]
+| `(%%p ∧ %%q) := return [(info.operator tt, p), (info.operator ff, q)]
 | t := return $ if check_eq v deps t then none else some []
 
-meta def find (v : expr) : list expr → expr → tactic (list info) | deps e := do
-some ps ← analyse v deps e | return [],
-ps' ← ps.mmap (λd, do
-  deps ← return $ match d with (info.binder v tt, _) := v :: deps | _ := deps end,
-  ps ← find deps d.2,
-  return $ d.1 :: ps),
-return ps'.join
+meta def find (v : expr) : list expr → expr → tactic (list $ list info) | deps e := do
+some is ← analyse v deps e | return [[]],
+iss ← is.mmap (λ⟨i, t⟩, do
+  deps ← return $ match i with (info.binder v tt) := v :: deps | _ := deps end,
+  iss ← find deps t,
+  return $ iss.map $ λis, i :: is),
+return iss.join
 
 meta def reorder_equality : list info → conv norm_form
-| [] := do
-  `(_ = _) ← lhs | return norm_form.ex, -- inner term is binder
-  return norm_form.eq -- inner term is equality
-| (info.binder _ _::xs)  := do
-  n ← congr_binder ``ex_congr (λe, reorder_equality xs),
-  match n with
-  | norm_form.eq := do apply_const ``e_eq, return norm_form.cn
-  | norm_form.ex := do apply_const ``e_ex, return norm_form.ex
-  | norm_form.cn := do apply_const ``e_cn, return norm_form.cn
-  end
-| (info.operator tt::xs) := do
-  n ← congr_simple ``r_congr (reorder_equality xs),
-  match n with
-  | norm_form.eq := do apply_const ``r_eq, return norm_form.cn
-  | norm_form.ex := do apply_const ``r_ex, return norm_form.ex
-  | norm_form.cn := do apply_const ``r_cn, return norm_form.cn
-  end
-| (info.operator ff::xs) := do
-  n ← congr_simple ``l_congr (reorder_equality xs),
-  match n with
-  | norm_form.eq := do apply_const ``l_eq, return norm_form.cn
-  | norm_form.ex := do apply_const ``l_ex, return norm_form.ex
-  | norm_form.cn := do apply_const ``l_cn, return norm_form.cn
-  end
+| [] := (do `(_ = _) ← lhs, return norm_form.eq) <|> return norm_form.ex
+| (i@(info.binder _ _)::xs)  := congr (reorder_equality xs) i >>= apply_norm [``e_eq_Prop, ``e_eq] [``e_eq] [``e_cn]
+| (i@(info.operator tt)::xs) := congr (reorder_equality xs) i >>= apply_norm [``r_eq] [``r_ex] [``r_cn]
+| (i@(info.operator ff)::xs) := congr (reorder_equality xs) i >>= apply_norm [``l_eq] [``l_ex] [``l_cn]
 
-meta def elim_equality (l : list info) : conv unit := do
-n ← congr_binder ``ex_congr (λe, reorder_equality l),
-match n with
-| norm_form.eq := apply_const ``elim_eq
-| norm_form.ex := apply_const ``elim_ex
-| norm_form.cn := apply_const ``elim_cn
-end
+meta def elim_equality (l : list info) : conv unit :=
+congr_ex (reorder_equality l) >>= apply_norm [``elim_eq] [``elim_ex] [``elim_cn] >> skip
 
-meta def reorder_non_dependent1 : list info → conv (list info)
-| [] := failed
-| xs@((info.binder _ ff) :: _) := return xs
-| ((info.binder _ tt) :: xs) := do
-  xs ← congr_binder ``ex_congr (λe, reorder_non_dependent1 xs),
-  apply_const ``comm_ex,
-  return xs
-| ((info.operator tt) :: xs) := do
-  xs ← congr_simple ``r_congr (reorder_non_dependent1 xs),
-  apply_const ``comm_r,
-  return xs
-| ((info.operator ff) :: xs) := do
-  xs ← congr_simple ``l_congr (reorder_non_dependent1 xs),
-  apply_const ``comm_l,
-  return xs
+meta def reorder_non_dependent : list info → conv (option (list info))
+| []      := return none
+| (i::is) := (do info.binder _ ff ← return i, return is) <|> (do
+  some is' ← congr (reorder_non_dependent is) i | return none,
+  r ← return $ match i with
+  | info.binder _ _  := ``comm_ex
+  | info.operator tt := ``comm_r
+  | info.operator ff := ``comm_l
+  end,
+  apply_const r,
+  return (i :: is'))
 
 meta def reorder_and_elim : list info → conv unit | l := do
-l' ← congr_binder ``ex_congr (λe, reorder_non_dependent1 l) | elim_equality l,
+some l' ← congr_ex (reorder_non_dependent l) | elim_equality l,
 apply_const ``comm_ex,
-congr_binder ``ex_congr (λe, reorder_and_elim l')
+congr_ex (reorder_and_elim l')
 
 meta def run : conv unit := do
-congr_binder ``ex_congr $ λv, do
-  t ← lhs,
-  ps ← find v [v] t,
-  reorder_and_elim ps
+pss ← congr_binder ``ex_congr (λv, do t ← lhs, find v [v] t),
+pss.mfirst reorder_and_elim
 
 end exists_eq_elim
+
+section test
+
+variables {α : Type*} {β : Type*} {ι : Sort*} {ι₂ : Sort*} {a : α} {γ : β → Type*} {δ : α → Type*}
+  {f : α → β} {p : β → Prop}
+
+example : (∃b, ∃c:γ b, ∃h : f a = b, p b) ↔ (∃c:γ (f a), p (f a)) :=
+by conversion exists_eq_elim.run
+
+example : (∃b, ∃c:γ b, ∃a, ∃h : f a = b, p b) ↔ (∃a, ∃c:γ (f a), p (f a)) :=
+by conversion exists_eq_elim.run
+
+example {f : Πa, δ a → β} :
+  (∃b, ∃c:γ b, ∃a, ∃d:δ a, ∃h : f a d = b, p b) ↔ (∃a, ∃d:δ a, ∃c:γ (f a d), p (f a d)) :=
+by conversion exists_eq_elim.run
+
+example {f : Πa, δ a → β} :
+  (∃b, ∃a, ∃c:γ b, ∃d:δ a, ∃h : f a d = b, p b) ↔ (∃a, ∃d:δ a, ∃c:γ (f a d), p (f a d)) :=
+by conversion exists_eq_elim.run
+
+example {f : Πa, δ a → β} :
+  (∃b, ∃a, ∃d:δ a, ∃c:γ b, ∃h : f a d = b, p b) ↔ (∃a, ∃d:δ a, ∃c:γ (f a d), p (f a d)) :=
+by conversion exists_eq_elim.run
+
+example {f : Πa, δ a → β} :
+  (∃b, ∃a, ∃d:δ a, ∃h : f a d = b, ∃c:γ b, p b) ↔ (∃a, ∃d:δ a, ∃c:γ (f a d), p (f a d)) :=
+by conversion exists_eq_elim.run
+
+example {f : Πa, δ a → β} :
+  (∃b, ∃a, ∃d:δ a, ∃h' : a = a ∧ b = b, ∃h : f a d = b, ∃c:γ b, p b) ↔ _ :=
+by conversion exists_eq_elim.run
+
+example {f : α → β} {q : β → α → Prop} :
+  (∃b, ∃a, ∃h:q b a, ∃h' : b = b, ∃h : f a = b, ∃c:γ b, p b) ↔ _ :=
+by conversion exists_eq_elim.run
+
+example : (∃a : α, (∃c, ∃h: a = a , ∃b : β, a = f c) ∧ (∃c:α, p a)) ↔ _ :=
+begin
+  transitivity,
+  conversion exists_eq_elim.run,
+end
+
+end test
+
 
 #exit
 
