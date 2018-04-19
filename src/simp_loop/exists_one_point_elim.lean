@@ -3,7 +3,7 @@ Copyright (c) 2018 Johannes Hölzl. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Johannes Hölzl
 
-1-point elimination for exists.
+1-point elimination for ∃.
 
 This implements a conversion transforming
   `∃x, t[x, x = a] ~> t[a, rfl]`
