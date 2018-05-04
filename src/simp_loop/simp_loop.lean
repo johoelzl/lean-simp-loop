@@ -3,7 +3,7 @@ Copyright (c) 2018 Johannes Hölzl. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Johannes Hölzl
 
-Simplifier loop with additional simplification procedures (i.e. Isabelle's simpprocs).
+Simplifier loop with additional simplification procedures (i.e. Isabelle's simprocs).
 -/
 
 open tactic
@@ -21,7 +21,6 @@ open tactic
   - the context C should not contain binder appearing in p, a, and b.
   - take care of iterated ifs: if p then (if q then a else b) else c
 
-The following may be interesting until there is a algebraic normalizer in Lean
 * cancellation:
   - in an expression: + x - y - x = - y
   - in an (in)equality: a + b = b + c → a = c
@@ -38,14 +37,15 @@ meta def proc_attr : user_attribute :=
 
 protected meta def loop (p : list $ tactic unit) (s : simp_lemmas) (to_unfold : list name)
   (cfg : simp_config) (dcfg : dsimp_config) : tactic unit := do
-t₀ ← target,
-simp_target s to_unfold cfg,
-dsimp_target s to_unfold dcfg,
-p.mmap' id,
-t₁ ← target,
-if t₀ =ₐ t₁ then skip else loop
+  t₀ ← target,
+  simp_target s to_unfold cfg,
+  dsimp_target s to_unfold dcfg,
+  p.mmap' id,
+  t₁ ← target,
+  if t₀ =ₐ t₁ then skip else loop
 
 meta def main : tactic unit := do
-_ -- prepare simp lemmas, to_unfold data, configuration, discharger
+_
+-- prepare simp lemmas, to_unfold data, configuration, discharger
 
 end simp_loop
