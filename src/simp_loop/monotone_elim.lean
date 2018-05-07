@@ -174,6 +174,67 @@ congr_ex (reorder l')
 
 end reorder
 
+section term_focus
+
+/-
+
+Move a term on one side of a relation using Galois connections:
+
+  f x R y ↔ x Q g z
+
+    ⟹ f x R t ↔ x Q t'
+    ⟹ t Q g x ↔ t' R x
+
+and
+
+  f x R g y ↔ x Q y
+
+    ⟹ f x R t ↔ x Q t'
+    ⟹ t R g x ↔ t' Q x
+
+Setup:
+
+* allow symmetric relations
+* apply the rules symmetrically
+* should we add dischargers for conditional rules, ala:
+    0 < R → x / R < S ↔ x < S * R
+
+-/
+
+meta def connection_iff : user_attribute :=
+{ name := `connection_iff,
+  descr := "Connection rules of the form f x R y ↔ x Q g z, used for term focusing" }
+
+/-- `analyse_connection r` produces all possible focusing rules. For `t` has the type
+  `∀as, f x R t ↔ x Q g y` or `f x R g y ↔ x Q y` we produce a list of `(e, R, b)`
+
+  `∀as, R t (f x) ↔ Q _ _` or `∀as, R (f x) t ↔ Q _ _` where `b = tt` means the `x` is left.
+
+
+Idea: look at the sides where we only have a variable on a relation, this is the rhs. Figure
+out where the variable is on the lhs and produce the corresponding `b`. Do this for each variable
+occurring on 
+
+-/
+def analyse_connection (r : expr) : tactic (list $ expr × name × bool) :=
+_
+
+/-
+
+Lattices
+
+  x ≤ y ⊓ z ↔ x ≤ y ∧ x ≤ z
+
+  x ≤ y ⊔ z ↔ x \ z ≤ y  ??
+
+
+  x ≤ max y z ↔ 
+  
+-/
+
+
+end term_focus
+
 section equality_elim
 
 meta def check_eq (x : expr) (deps : list expr) : expr → bool
