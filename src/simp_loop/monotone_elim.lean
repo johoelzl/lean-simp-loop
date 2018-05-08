@@ -30,6 +30,43 @@ and
 -/
 import simp_loop.conv
 
+inductive bintree (α : Type*)
+| leaf (a : α) : bintree
+| node (l r : bintree) : bintree
+
+def list.dedup {α : Type*} [decidable_eq α] : list α → list α
+| []        := []
+| (x :: xs) := (if x ∈ xs then xs.dedup else x :: xs.dedup)
+
+namespace bintree
+variables {α : Type*} {β : Type*}
+
+def pos := list bool
+
+def left : bintree α → bintree α
+| (leaf a)   := leaf a
+| (node l r) := l
+
+def right : bintree α → bintree α
+| (leaf a)   := leaf a
+| (node l r) := r
+
+def at_pos : pos → bintree α → bintree α
+| []        t := t
+| (ff :: p) t := at_pos p (left t)
+| (tt :: p) t := at_pos p (right t)
+
+def map (f : α → β) : bintree α → bintree β
+| (leaf a) := leaf (f a)
+| (node l r) := node (map l) (map r)
+
+def mmap {m : Type* → Type*} [monad m] (f : α → m β) : bintree α → m (bintree β)
+| (leaf a)   := leaf <$> f a
+| (node l r) := node <$> mmap l <*> mmap r
+
+end bintree
+
+
 def monotone {α : Sort*} (r : α → α → Prop) (p : α → Prop) : Prop :=
 ∀x y, r x y → p x → p y
 
@@ -180,44 +217,105 @@ section term_focus
 
 Move a term on one side of a relation using Galois connections:
 
+Symmetric rules:
   f x R y ↔ x Q g z
 
     ⟹ f x R t ↔ x Q t'
     ⟹ t Q g x ↔ t' R x
 
-and
-
+Injectivity rules:
   f x R g y ↔ x Q y
 
     ⟹ f x R t ↔ x Q t'
     ⟹ t R g x ↔ t' Q x
+
+Splitting rules:
+  f x R t ↔ (C₁ ∧ x Q₁ t₁) ∨ (C₂ ∧ x Q₂ t₂)
 
 Setup:
 
 * allow symmetric relations
 * apply the rules symmetrically
 * should we add dischargers for conditional rules, ala:
-    0 < R → x / R < S ↔ x < S * R
+    0 < R → x / R ≤ S ↔ x ≤ S * R
+  or:
+    x / R ≤ S ↔ (0 < R ∧ x ≤ S * R) ∨ (R < 0 ∧ S * R ≤ x) ∨ (R = 0 ∧ 0 ≤ S)
+    This one doesn't work for monotone elimination as we have x ≤ S * R and S * R ≤ x case.
+* conditionals:
+    ∀x n i : ℕ, x + n = i ↔ (n ≤ i ∧ x = i - n)
+    ∀x n i : ℕ, x - n = i ↔ ((i = 0 ∧ x ≤ n) ∨ x = i + n)
+    ∀x n i : ℕ, n - x = i ↔ ((i = 0 ∧ n ≤ x) ∨ (i ≤ n ∧ x = i - n))
 
 -/
+
 
 meta def connection_iff : user_attribute :=
 { name := `connection_iff,
   descr := "Connection rules of the form f x R y ↔ x Q g z, used for term focusing" }
 
-/-- `analyse_connection r` produces all possible focusing rules. For `t` has the type
-  `∀as, f x R t ↔ x Q g y` or `f x R g y ↔ x Q y` we produce a list of `(e, R, b)`
+section analyse
 
-  `∀as, R t (f x) ↔ Q _ _` or `∀as, R (f x) t ↔ Q _ _` where `b = tt` means the `x` is left.
+meta def conjs : expr → tactic (list expr)
+| `(%%a ∧ %%b) := do
+  as ← conjs a,
+  bs ← conjs b,
+  return (as ++ bs)
+| e := return [e]
+
+meta def disjs_of_conjs : expr → tactic (list $ list expr)
+| `(%%a ∨ %%b) := do
+  as ← disjs_of_conjs a,
+  bs ← disjs_of_conjs b,
+  return (as ++ bs)
+| e := do
+  d ← conjs e,
+  return [d]
+
+-- better `parse_rel`: this doesn't work with heq!
+-- idea: use relation manager
+meta def parse_rel : expr → tactic (expr × expr × expr)
+| (expr.app (expr.app f a) b) := return (f, a, b)
+| _ := fail "term is not a relation application"
+
+def peep {α} : list α → list (list α × α × list α)
+| []        := []
+| (a :: xs) := ([], a, xs) :: (peep xs).map (λ⟨p, a', s⟩, (a::p, a', s))
+
+private meta def analyse_connection_aux (ls : list level) (vs : list expr) (lhs rhs : expr) :
+  tactic $ list pattern := do
+disjs ← disjs_of_conjs rhs,
+candidates ← disjs.mmap (λconjs, do
+  candidates ← (peep conjs).mmap (λxs, (do
+    (ps, e, ss) ← return xs,
+    (rel, l, r) ← parse_rel e,
+    return $
+      (if l ∈ vs ∧ ¬ l.occurs r ∧ ¬ l.occurs rel ∧ (ps ++ ss).all (λe, ¬ l.occurs e) then [l] else []) ++
+      (if r ∈ vs ∧ ¬ r.occurs l ∧ ¬ r.occurs rel ∧ (ps ++ ss).all (λe, ¬ r.occurs e) then [r] else []))
+      <|> return []),
+  return candidates.join),
+let candidates := vs.filter $ λv, candidates.all $ λcs, v ∈ cs,
+
+(rel, l, r) ← parse_rel lhs,
+let candidates := candidates.filter $ λc,
+  ¬ c.occurs rel ∧ ((c.occurs l ∧ ¬ c.occurs r) ∨ c.occurs r ∧ ¬ c.occurs l),
+let candidates := candidates.dedup,
+let vs' := vs.filter (λv, v.occurs lhs),
+candidates.mmap (λc, mk_pattern ls vs' lhs [] [c])
+
+/-- `analyse_connection ls r` a list of symm-flag and pattern. The pattern matches if the rule is
+applicable. In this case `tactic.match_pattern` returns one expression where the focused variable
+should occur. The symm-flag indicates if the iff-rule should be applied in its symmetric variant. -/
+meta def analyse_connection (n : name) : tactic $ list $ bool × pattern := do
+e ← get_env,
+d ← e.get n,
+let ls := d.univ_params.map level.param,
+(vs, `(%%lhs ↔ %%rhs)) ← mk_local_pis d.type,
+l ← analyse_connection_aux ls vs lhs rhs,
+r ← analyse_connection_aux ls vs rhs lhs,
+return (l.map (λp, (ff, p)) ++ r.map (λp, (tt, p)))
 
 
-Idea: look at the sides where we only have a variable on a relation, this is the rhs. Figure
-out where the variable is on the lhs and produce the corresponding `b`. Do this for each variable
-occurring on 
-
--/
-def analyse_connection (r : expr) : tactic (list $ expr × name × bool) :=
-_
+end analyse
 
 /-
 
@@ -225,15 +323,19 @@ Lattices
 
   x ≤ y ⊓ z ↔ x ≤ y ∧ x ≤ z
 
-  x ≤ y ⊔ z ↔ x \ z ≤ y  ??
+  y ⊓ z ≤ x ↔ y \ z ≤ x (Heyting algebra)
 
+  a ⊔ b ≤ c ↔ a ≤ c ∧ b ≤ c
 
-  x ≤ max y z ↔ 
-  
+Case: Focus on a
+  (∃ x, x ⊔ b ≤ c ∧ p x) ↔ (∃x, x ≤ c ∧ b ≤ c ∧ p x)
+
 -/
 
 
 end term_focus
+
+#exit
 
 section equality_elim
 
