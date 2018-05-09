@@ -289,8 +289,8 @@ candidates ← disjs.mmap (λconjs, do
     (ps, e, ss) ← return xs,
     (rel, l, r) ← parse_rel e,
     return $
-      (if l ∈ vs ∧ ¬ l.occurs r ∧ ¬ l.occurs rel ∧ (ps ++ ss).all (λe, ¬ l.occurs e) then [l] else []) ++
-      (if r ∈ vs ∧ ¬ r.occurs l ∧ ¬ r.occurs rel ∧ (ps ++ ss).all (λe, ¬ r.occurs e) then [r] else []))
+      (if l ∈ vs ∧ (r :: rel :: ps ++ ss).all (λe, ¬ l.occurs e) then [l] else []) ++
+      (if r ∈ vs ∧ (l :: rel :: ps ++ ss).all (λe, ¬ r.occurs e) then [r] else []))
       <|> return []),
   return candidates.join),
 let candidates := vs.filter $ λv, candidates.all $ λcs, v ∈ cs,
@@ -314,6 +314,29 @@ l ← analyse_connection_aux ls vs lhs rhs,
 r ← analyse_connection_aux ls vs rhs lhs,
 return (l.map (λp, (ff, p)) ++ r.map (λp, (tt, p)))
 
+meta def ors (c : conv unit) : conv unit := do
+`(_ ∨ _) ← lhs | c,
+congr_core (congr_core skip ors) ors,
+skip
+
+meta def ands (c : conv unit) : conv unit := do
+`(_ ∧ _) ← lhs | c,
+congr_core (congr_core skip ands) ands,
+skip
+
+meta def local_eq (v₀ v₁ : expr) : bool :=
+v₀.is_local_constant ∧ v₁.is_local_constant ∧ v₀.local_uniq_name = v₁.local_uniq_name
+
+meta def term_focus (l : list (name × bool × pattern)) (v : expr) : conv unit :=
+l.mfirst $ assume ⟨n, symm, pat⟩, do
+  ([], [t]) ← match_pattern pat,
+  guard $ v.occurs t,
+  (if symm then apply_const n else fail "symmetric apply not supported yet"),
+  ors (ands $ (do
+    l ← lhs,
+    (_, l, r) ← lift_tactic $ parse_rel l,
+    guard ((v.occurs l ∧ ¬ local_eq l v) ∨ (v.occurs r ∧ ¬ local_eq r v)),
+    term_focus) <|> skip)
 
 end analyse
 
